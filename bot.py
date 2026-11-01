@@ -48,29 +48,50 @@ class BucketGuard:
 
 GUARD = BucketGuard(per_route=3)
 
-class NukeConfirm(discord.ui.View):
-    def __init__(self, author: discord.User):
+# --- THE FORM (MODAL) ---
+class NukeModal(discord.ui.Modal, title="Are you sure you want to nuke this server?"):
+    confirm = discord.ui.TextInput(
+        label="Type YES to confirm",
+        placeholder="YES",
+        required=True,
+        max_length=3
+    )
+    kick = discord.ui.TextInput(
+        label="Do you want to kick other members? (doesn't work on owners)",
+        placeholder="yes or no",
+        required=True,
+        max_length=3
+    )
+
+    def __init__(self, cog):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if self.confirm.value.upper() != "YES":
+            return await interaction.response.send_message(embed=discord.Embed(description="❌ Cancelled. You did not type YES.", color=discord.Color.red()), ephemeral=True)
+        
+        kick_enabled = self.kick.value.lower() == "yes"
+        
+        await interaction.response.defer()
+        await self.cog._run(interaction, kick_enabled)
+
+# --- THE BUTTON TO OPEN THE FORM ---
+class NukeStartView(discord.ui.View):
+    def __init__(self, cog, author):
         super().__init__(timeout=60)
+        self.cog = cog
         self.author = author
-        self.kick_choice: bool | None = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author.id:
-            await interaction.response.send_message("Not your confirm.", ephemeral=True)
+            await interaction.response.send_message("Not your nuke.", ephemeral=True)
             return False
         return True
 
-    @discord.ui.button(label="YES", style=discord.ButtonStyle.danger)
-    async def yes(self, interaction: discord.Interaction, _):
-        self.kick_choice = True
-        await interaction.response.edit_message(embed=discord.Embed(description="☢️ NUKE INITIATED", color=discord.Color.orange()), view=None)
-        self.stop()
-
-    @discord.ui.button(label="NO", style=discord.ButtonStyle.secondary)
-    async def no(self, interaction: discord.Interaction, _):
-        self.kick_choice = False
-        await interaction.response.edit_message(embed=discord.Embed(description="☢️ NUKE INITIATED", color=discord.Color.orange()), view=None)
-        self.stop()
+    @discord.ui.button(label="Confirm Nuke", style=discord.ButtonStyle.danger)
+    async def open_form(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(NukeModal(self.cog))
 
 class Nuke(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -79,7 +100,6 @@ class Nuke(commands.Cog):
     @commands.command(name="sync")
     @commands.has_permissions(administrator=True)
     async def sync(self, ctx: commands.Context):
-        """Force syncs slash commands."""
         msg = await ctx.send("Syncing...")
         try:
             synced = await self.bot.tree.sync()
@@ -91,31 +111,23 @@ class Nuke(commands.Cog):
     @commands.has_permissions(administrator=True)
     @commands.guild_only()
     async def nuke(self, ctx: commands.Context):
-        view = NukeConfirm(ctx.author)
         embed = discord.Embed(
-            title="☢️ NUKE",
-            description=f"**{ctx.guild.name}**\nDo you want to kick other people?",
-            color=discord.Color.orange()
+            title="☢️ Nuke this server",
+            description="Click the button below to open the confirmation form.",
+            color=discord.Color.red()
         )
-        
-        try:
-            prompt = await ctx.author.send(embed=embed, view=view)
-            await ctx.reply("Check your DMs to confirm.", mention_author=False, delete_after=5)
-        except discord.Forbidden:
-            return await ctx.reply("I cannot DM you. Enable DMs.", mention_author=False, delete_after=5)
-            
-        await view.wait()
-        if view.kick_choice is None:
-            return await prompt.edit(embed=discord.Embed(description="Cancelled (timed out).", color=discord.Color.red()), view=None)
+        view = NukeStartView(self, ctx.author)
+        await ctx.reply(embed=embed, view=view)
 
-        status = await ctx.send("☢️ NUKE INITIATED")
-        await self._run(ctx, view.kick_choice, status)
-
-    async def _run(self, ctx: commands.Context, kick_enabled: bool, status: discord.Message):
-        guild = ctx.guild
-        author_id = ctx.author.id
+    async def _run(self, interaction: discord.Interaction, kick_enabled: bool):
+        guild = interaction.guild
+        author_id = interaction.user.id
         bot_id = self.bot.user.id
         owner_id = guild.owner_id
+
+        status = await interaction.channel.send(
+            embed=discord.Embed(description="☢️ NUKE INITIATED", color=discord.Color.orange())
+        )
 
         counts = {"kicked": 0, "channels": 0, "roles": 0, "webhooks": 0, "created": 0}
         errors: list[str] = []
@@ -235,7 +247,7 @@ class Nuke(commands.Cog):
                 f"**kicked:** {counts['kicked']}\n"
                 f"**deleted:** {counts['channels']} ch · {counts['roles']} roles · {counts['webhooks']} hooks\n"
                 f"**created:** {counts['created']} channels\n"
-                f"**by:** {ctx.author.mention}"
+                f"**by:** {interaction.user.mention}"
             ),
             color=discord.Color.red(),
         )
