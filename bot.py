@@ -76,6 +76,17 @@ class Nuke(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    @commands.command(name="sync")
+    @commands.is_owner()
+    async def sync(self, ctx: commands.Context):
+        """Force syncs slash commands to Discord."""
+        await ctx.send("Syncing commands...")
+        try:
+            synced = await self.bot.tree.sync()
+            await ctx.send(f"Synced {len(synced)} command(s).")
+        except Exception as e:
+            await ctx.send(f"Failed to sync: {e}")
+
     @commands.command(name="nuke", aliases=NUKE_ALIASES[1:])
     @commands.has_permissions(administrator=True)
     @commands.guild_only()
