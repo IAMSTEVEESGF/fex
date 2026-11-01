@@ -330,16 +330,15 @@ class Nuke(commands.Cog):
             msg = f"`{type(error).__name__}`: {error}"
         await ctx.reply(embed=discord.Embed(description=msg, color=discord.Color.red()), mention_author=False)
 
-
 # ==========================================
-# STARTER CODE (Keeps the bot running)
+# STARTER CODE - THIS IS WHY IT WAS STOPPING
 # ==========================================
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.guilds = True
 
-bot = commands.Bot(command_prefix="$", intents=intents, help_command=None)
+bot = commands.Bot(command_prefix="$", intents=intents)
 
 @bot.event
 async def on_ready():
